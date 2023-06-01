@@ -51,6 +51,14 @@ do
       --scenario=*)
           SCENARIO=${1#*=}
           ;;
+      --concurrent-users=*)
+          WORKLOAD_UNIT=concurrent-users
+          WORKLOADS=(${1#*=})
+          ;;
+      --users-per-sec=*)
+          WORKLOAD_UNIT=users-per-sec
+          WORKLOADS=(${1#*=})
+          ;;
       --)
           shift
           break
@@ -78,4 +86,9 @@ fi
 
 CLASSPATH_OPTS="$DIRNAME/../lib/*"
 
-exec java $JAVA_OPTS "${SERVER_OPTS[@]}" "${CONFIG_ARGS[@]}" -cp $CLASSPATH_OPTS io.gatling.app.Gatling -bf $DIRNAME -rf "$DIRNAME/../results" -s $SCENARIO
+N=${#WORKLOADS[@]}
+for i in $(seq $N); do
+  WORKLOAD=${WORKLOADS[i-1]}
+  if [[ $N > 1 ]]; then echo "Iteration: $i / $N, Workload: $WORKLOAD $WORKLOAD_UNIT, Started at: $(date -uIs)"; fi
+  java $JAVA_OPTS "${SERVER_OPTS[@]}" "${CONFIG_ARGS[@]}" "-D$WORKLOAD_UNIT=$WORKLOAD" -cp $CLASSPATH_OPTS io.gatling.app.Gatling -bf $DIRNAME -rf "$DIRNAME/../results" -s $SCENARIO
+done
