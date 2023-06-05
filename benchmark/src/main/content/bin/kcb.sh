@@ -34,7 +34,8 @@ SERVER_OPTS=()
 
 SCENARIO="keycloak.scenario.authentication.ClientSecret"
 
-INCREMENT=10
+INCREMENT=32
+MODE="single-run"
 
 while [ "$#" -gt 0 ]
 do
@@ -49,6 +50,9 @@ do
       --debug=*)
           DEBUG_MODE=true
           DEBUG_PORT=${1#*=}
+          ;;
+      --mode=*)
+          MODE=${1#*=}
           ;;
       --scenario=*)
           SCENARIO=${1#*=}
@@ -91,38 +95,63 @@ fi
 
 CLASSPATH_OPTS="$DIRNAME/../lib/*"
 
+declare -A RESULT_CACHE
+
 run_benchmark_with_workload() {
-  echo "Running benchmark with $1=$2"
-  OUTPUT_DIR="$DIRNAME/../results/incremental-results/$2/"
+  if [ -v RESULT_CACHE[$2] ]; then
+      echo "Keycloak benchmark was already running for $1=$2 with result ${RESULT_CACHE[$2]}"
+      return "${RESULT_CACHE[$2]}"
+  fi
+  OUTPUT_DIR=${3:-"$DIRNAME/../results/"}
+  echo "Running benchmark with $1=$2, result output will be available in: $OUTPUT_DIR"
   mkdir -p "$OUTPUT_DIR"
   java $JAVA_OPTS "${SERVER_OPTS[@]}" "${CONFIG_ARGS[@]}" "-D$1=$2" -cp $CLASSPATH_OPTS io.gatling.app.Gatling -bf $DIRNAME -rf "$OUTPUT_DIR" -s $SCENARIO > "${OUTPUT_DIR}gatling.log" 2>&1
 }
 
-MAX_ATTEMPTS=100
-ATTEMPT=0
-
-trap printout SIGINT
-printout() {
-    echo ""
-    echo "Finished with $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
-    exit
-}
-
-while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-  ((ATTEMPT++))
-
+if [ "$MODE" = "single-run" ]; then
+  echo "Running benchmark in single-run mode"
   run_benchmark_with_workload $WORKLOAD_UNIT $CURRENT_WORKLOAD
+  exit
+elif [ "$MODE" = "incremental" ]; then
+  echo "Running benchmark in incremental mode"
+  MAX_ATTEMPTS=100
+  ATTEMPT=0
 
-  if [ $? -ne 0 ]; then
-    echo "Keycloak benchmark failed for $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
-    break
+  trap printout SIGINT
+  printout() {
+      echo ""
+      echo "Finished with $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
+      exit
+  }
+
+  while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+    ((ATTEMPT++))
+
+    run_benchmark_with_workload $WORKLOAD_UNIT $CURRENT_WORKLOAD "$DIRNAME/../results/$MODE/$CURRENT_WORKLOAD/"
+
+    RESULT_CACHE[$CURRENT_WORKLOAD]=$?
+
+    if [ ${RESULT_CACHE[$CURRENT_WORKLOAD]} -ne 0 ]; then
+      echo "Keycloak benchmark failed for $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
+      LAST_SUCCESSFUL_WORKLOAD=$((CURRENT_WORKLOAD - INCREMENT))
+
+      if [ $INCREMENT -eq 1 ]; then
+        echo "Reached the limit for scenario $SCENARIO with $WORKLOAD_UNIT=$LAST_SUCCESSFUL_WORKLOAD"
+        exit
+      fi
+
+      # Reset workload to last successful value and decrease increment
+      CURRENT_WORKLOAD=$((CURRENT_WORKLOAD - INCREMENT))
+      INCREMENT=$((INCREMENT / 2))
+    fi
+
+    CURRENT_WORKLOAD=$((CURRENT_WORKLOAD + INCREMENT))
+  done
+
+  if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+    echo "Reached maximum attempts and all attempts succeeded."
   fi
-
-  CURRENT_WORKLOAD=$((CURRENT_WORKLOAD + INCREMENT))
-done
-
-if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-  echo "Reached maximum attempts and all attempts succeeded."
+else
+  echo "Unknown mode $MODE"
+  exit 1
 fi
-
-
