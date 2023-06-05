@@ -34,6 +34,8 @@ SERVER_OPTS=()
 
 SCENARIO="keycloak.scenario.authentication.ClientSecret"
 
+INCREMENT=10
+
 while [ "$#" -gt 0 ]
 do
     case "$1" in
@@ -53,11 +55,14 @@ do
           ;;
       --concurrent-users=*)
           WORKLOAD_UNIT=concurrent-users
-          WORKLOADS=(${1#*=})
+          CURRENT_WORKLOAD=(${1#*=})
           ;;
       --users-per-sec=*)
           WORKLOAD_UNIT=users-per-sec
-          WORKLOADS=(${1#*=})
+          CURRENT_WORKLOAD=(${1#*=})
+          ;;
+      --increment=*)
+          INCREMENT=${1#*=}
           ;;
       --)
           shift
@@ -86,9 +91,38 @@ fi
 
 CLASSPATH_OPTS="$DIRNAME/../lib/*"
 
-N=${#WORKLOADS[@]}
-for i in $(seq $N); do
-  WORKLOAD=${WORKLOADS[i-1]}
-  if [[ $N > 1 ]]; then echo "Iteration: $i / $N, Workload: $WORKLOAD $WORKLOAD_UNIT, Started at: $(date -uIs)"; fi
-  java $JAVA_OPTS "${SERVER_OPTS[@]}" "${CONFIG_ARGS[@]}" "-D$WORKLOAD_UNIT=$WORKLOAD" -cp $CLASSPATH_OPTS io.gatling.app.Gatling -bf $DIRNAME -rf "$DIRNAME/../results" -s $SCENARIO
+run_benchmark_with_workload() {
+  echo "Running benchmark with $1=$2"
+  OUTPUT_DIR="$DIRNAME/../results/incremental-results/$2/"
+  mkdir -p "$OUTPUT_DIR"
+  java $JAVA_OPTS "${SERVER_OPTS[@]}" "${CONFIG_ARGS[@]}" "-D$1=$2" -cp $CLASSPATH_OPTS io.gatling.app.Gatling -bf $DIRNAME -rf "$OUTPUT_DIR" -s $SCENARIO > "${OUTPUT_DIR}gatling.log" 2>&1
+}
+
+MAX_ATTEMPTS=100
+ATTEMPT=0
+
+trap printout SIGINT
+printout() {
+    echo ""
+    echo "Finished with $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
+    exit
+}
+
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+  ((ATTEMPT++))
+
+  run_benchmark_with_workload $WORKLOAD_UNIT $CURRENT_WORKLOAD
+
+  if [ $? -ne 0 ]; then
+    echo "Keycloak benchmark failed for $WORKLOAD_UNIT=$CURRENT_WORKLOAD"
+    break
+  fi
+
+  CURRENT_WORKLOAD=$((CURRENT_WORKLOAD + INCREMENT))
 done
+
+if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+  echo "Reached maximum attempts and all attempts succeeded."
+fi
+
+
